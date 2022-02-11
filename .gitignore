@@ -1,6 +1,3 @@
 .history
 .vscode
 .DS_Store
-projects/lecheck/resources/charts/lecheck/*.tgz
-projects/lecheck/resources/charts/init/*.tgz
-projects/lecheck/resources/charts/lecheck/override.yaml
