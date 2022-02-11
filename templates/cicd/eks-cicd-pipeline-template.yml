@@ -1,0 +1,266 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: EKS CI/CD PipeLine
+
+
+Parameters:
+  RunEnvironment:
+    Type: String
+    AllowedValues:
+      - dev
+      - stg
+      - prod
+    Description: Set environment state
+
+  SourceConnectionArn:
+    Type: String
+
+  GitHubAccountName:
+    Type: String
+
+  GitHubRepo:
+    Type: String
+
+  GitHubBranch:
+    Type: String
+
+  CodeBuildDockerImage:
+    Type: String
+
+  NortificationChatbotArn:
+    Type: String
+
+
+Mappings:
+  BuildSpecYaml:
+    env:
+      prod: buildspec.yml
+      stg: buildspec.yml
+      dev: buildspec-dev.yml
+  ValuesYaml:
+    env:
+      prod: values-prod.yaml
+      stg: values-stg.yaml
+      dev: values-dev.yaml
+  RepositoryBranch:
+    env:
+      prod: master
+      stg: staging
+      dev: develop
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: ENV
+        Parameters:
+          - RunEnvironment
+      - Label:
+          default: Git
+        Parameters:
+          - SourceConnectionArn
+          - GitHubAccountName
+          - GitHubRepo
+          - GitHubBranch
+      - Label:
+          default: CodeBuild
+        Parameters:
+          - CodeBuildDockerImage
+
+Resources:
+  EcrDockerRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Ref GitHubRepo
+
+  CodePipelineArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      LifecycleConfiguration:
+        Rules:
+          - Id: LifeCycleRule
+            Status: Enabled
+            ExpirationInDays: '30'
+
+  CodePipelineServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: codepipeline-access
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Resource: "*"
+                Effect: Allow
+                Action:
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
+                  - iam:PassRole
+              - Resource: !Ref SourceConnectionArn
+                Effect: Allow
+                Action:
+                  - codestar-connections:UseConnection
+              - Resource: !Sub arn:aws:s3:::${CodePipelineArtifactBucket}/*
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:GetBucketVersioning
+    DependsOn: CodePipelineArtifactBucket
+
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Resource: '*'
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+              - Resource: '*'
+                Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+              - Resource: !Sub arn:aws:s3:::${CodePipelineArtifactBucket}/*
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:GetObjectVersion
+              - Resource: '*'
+                Effect: Allow
+                Action:
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:PutImage
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+              - Resource: !Ref SourceConnectionArn
+                Effect: Allow
+                Action:
+                  - codestar-connections:UseConnection
+              - Resource: '*'
+                Effect: Allow
+                Action:
+                  - secretsmanager:GetRandomPassword
+                  - secretsmanager:GetResourcePolicy
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                  - secretsmanager:ListSecretVersionIds
+                  - secretsmanager:ListSecrets
+
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub ${GitHubRepo}-eks-deploy
+      Source:
+        BuildSpec: !FindInMap [BuildSpecYaml, env, !Ref RunEnvironment]
+        Type: CODEPIPELINE
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Type: LINUX_CONTAINER
+        PrivilegedMode: true
+        Image: !Ref CodeBuildDockerImage
+        EnvironmentVariables:
+          - Name: AWS_ACCOUNT_ID
+            Value: !Ref AWS::AccountId
+          - Name: REPOSITORY_URI
+            Value: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${EcrDockerRepository}
+          - Name: REPOSITORY_NAME
+            Value: !Ref GitHubRepo
+          - Name: REPOSITORY_BRANCH
+            Value: !FindInMap [RepositoryBranch, env, !Ref RunEnvironment]
+          - Name: ENV_STATE
+            Value: !Ref RunEnvironment
+          - Name: DEBUG
+            Value: --debug-mode
+          - Name: ValuesYaml
+            Value: !FindInMap [ValuesYaml, env, !Ref RunEnvironment]
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+
+  CodePipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub ${GitHubRepo}-eks-pipe
+      RoleArn: !GetAtt CodePipelineServiceRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref CodePipelineArtifactBucket
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: App
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeStarSourceConnection
+                Version: 1
+              Configuration:
+                ConnectionArn: !Ref SourceConnectionArn
+                FullRepositoryId: !Sub ${GitHubAccountName}/${GitHubRepo}
+                BranchName: !Ref GitHubBranch
+                OutputArtifactFormat: CODEBUILD_CLONE_REF
+              OutputArtifacts:
+                - Name: App
+              RunOrder: 1
+        - Name: Build
+          Actions:
+            - Name: Build
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: 1
+                Provider: CodeBuild
+              Configuration:
+                ProjectName: !Ref CodeBuildProject
+              InputArtifacts:
+                - Name: App
+              OutputArtifacts:
+                - Name: BuildOutput
+              RunOrder: 1
+    DependsOn: CodeBuildProject
+
+  CodePilelineNortification:
+    Type: AWS::CodeStarNotifications::NotificationRule
+    Properties:
+      DetailType: FULL
+      EventTypeIds:
+        - codepipeline-pipeline-pipeline-execution-failed
+        - codepipeline-pipeline-pipeline-execution-canceled
+        - codepipeline-pipeline-pipeline-execution-succeeded
+        - codepipeline-pipeline-manual-approval-failed
+        - codepipeline-pipeline-manual-approval-needed
+        - codepipeline-pipeline-manual-approval-succeeded
+      Name: !Sub ${CodePipeline}-CI-Pipeline-Result
+      Resource: !Sub arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${GitHubRepo}-eks-pipe
+      Targets:
+        - TargetAddress: !Ref NortificationChatbotArn
+          TargetType: AWSChatbotSlack
+    DependsOn: CodePipeline

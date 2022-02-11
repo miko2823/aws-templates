@@ -1,0 +1,149 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: WAF
+
+Parameters:
+  Scope:
+    Type: String
+    AllowedValues:
+      - REGIONAL
+      - CLOUDFRONT
+    Description: Set scope
+    AllowedPattern: ^[a-zA-Z0-9-_/.:]*$
+  ResourceType:
+    Type: String
+    AllowedValues:
+      - front
+      - front-management
+      - serverside
+    Description: Set resource type
+    AllowedPattern: ^[a-zA-Z0-9-_/.:]*$
+  RunEnvironment:
+    Type: String
+    AllowedValues:
+      - dev
+      - stg
+      - prod
+      - test
+    Description: Set environment state
+    AllowedPattern: ^[a-zA-Z0-9-_/.:]*$
+
+
+Resources:
+  WebACL:
+    Type: "AWS::WAFv2::WebACL"
+    Properties:
+      Name: !Sub "${ResourceType}-${RunEnvironment}"
+      DefaultAction:
+        Allow: {}
+      Scope: !Ref Scope
+      Rules:
+          -
+            Name: AWS-AWSManagedRulesAmazonIpReputationList
+            Priority: 1
+            Statement:
+              ManagedRuleGroupStatement:
+                VendorName: AWS
+                Name: AWSManagedRulesAmazonIpReputationList
+            OverrideAction:
+              None: {}
+            VisibilityConfig:
+              CloudWatchMetricsEnabled: true
+              MetricName: AWSManagedRulesAmazonIpReputationList
+              SampledRequestsEnabled: true
+          -
+            Name: AWS-AWSManagedRulesCommonRuleSet
+            Priority: 2
+            Statement:
+              ManagedRuleGroupStatement:
+                VendorName: AWS
+                Name: AWSManagedRulesCommonRuleSet
+                ExcludedRules:
+                  - Name: CrossSiteScripting_BODY
+                  - Name: CrossSiteScripting_COOKIE
+                  - Name: CrossSiteScripting_QUERYARGUMENTS
+                  - Name: CrossSiteScripting_URIPATH
+                  - Name: EC2MetaDataSSRF_BODY
+                  - Name: EC2MetaDataSSRF_COOKIE
+                  - Name: EC2MetaDataSSRF_QUERYARGUMENTS
+                  - Name: EC2MetaDataSSRF_URIPATH
+                  - Name: GenericLFI_BODY
+                  - Name: GenericLFI_QUERYARGUMENTS
+                  - Name: GenericLFI_URIPATH
+                  - Name: GenericRFI_BODY
+                  - Name: GenericRFI_QUERYARGUMENTS
+                  - Name: GenericRFI_URIPATH
+                  - Name: NoUserAgent_HEADER
+                  - Name: RestrictedExtensions_QUERYARGUMENTS
+                  - Name: RestrictedExtensions_URIPATH
+                  - Name: SizeRestrictions_BODY
+                  - Name: SizeRestrictions_Cookie_HEADER
+                  - Name: SizeRestrictions_QUERYSTRING
+                  - Name: SizeRestrictions_URIPATH
+                  - Name: UserAgent_BadBots_HEADER
+            OverrideAction:
+              None: {}
+            VisibilityConfig:
+              CloudWatchMetricsEnabled: true
+              MetricName: AWSManagedRulesCommonRuleSet
+              SampledRequestsEnabled: true
+          -
+            Name: AWS-AWSManagedRulesKnownBadInputsRuleSet
+            Priority: 3
+            Statement:
+              ManagedRuleGroupStatement:
+                VendorName: AWS
+                Name: AWSManagedRulesKnownBadInputsRuleSet
+                ExcludedRules:
+                  - Name: BadAuthToken_COOKIE_AUTHORIZATION
+                  - Name: ExploitablePaths_URIPATH
+                  - Name: Host_localhost_HEADER
+                  - Name: PROPFIND_METHOD
+            OverrideAction:
+              None: {}
+            VisibilityConfig:
+              CloudWatchMetricsEnabled: true
+              MetricName: AWSManagedRulesKnownBadInputsRuleSet
+              SampledRequestsEnabled: true
+          -
+            Name: AWS-AWSManagedRulesLinuxRuleSet
+            Priority: 4
+            Statement:
+              ManagedRuleGroupStatement:
+                VendorName: AWS
+                Name: AWSManagedRulesLinuxRuleSet
+                ExcludedRules:
+                  - Name: LFI_BODY
+                  - Name: LFI_QUERYARGUMENTS
+                  - Name: LFI_URIPATH
+            OverrideAction:
+              None: {}
+            VisibilityConfig:
+              CloudWatchMetricsEnabled: true
+              MetricName: AWSManagedRulesLinuxRuleSet
+              SampledRequestsEnabled: true
+          -
+            Name: AWS-AWSManagedRulesSQLiRuleSet
+            Priority: 5
+            Statement:
+              ManagedRuleGroupStatement:
+                VendorName: AWS
+                Name: AWSManagedRulesSQLiRuleSet
+                ExcludedRules:
+                  - Name: SQLiExtendedPatterns_QUERYARGUMENTS
+                  - Name: SQLi_BODY
+                  - Name: SQLi_COOKIE
+                  - Name: SQLi_QUERYARGUMENTS
+                  - Name: SQLi_QUERYSTRING_COUNT
+                  - Name: SQLi_URIPATH
+            OverrideAction:
+              None: {}
+            VisibilityConfig:
+              CloudWatchMetricsEnabled: true
+              MetricName: AWSManagedRulesSQLiRuleSet
+              SampledRequestsEnabled: true
+      VisibilityConfig:
+        CloudWatchMetricsEnabled: true
+        MetricName: !Sub "${ResourceType}-${RunEnvironment}"
+        SampledRequestsEnabled: true

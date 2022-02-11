@@ -1,0 +1,121 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: WAF-logging
+
+Parameters:
+  ResourceType:
+    Type: String
+    AllowedValues:
+      - front
+      - front-management
+      - serverside
+    Description: Set resource type
+    AllowedPattern: ^[a-zA-Z0-9-_/.:]*$
+    ConstraintDescription: You must select a resource type
+  RunEnvironment:
+    Type: String
+    AllowedValues:
+      - dev
+      - stg
+      - prod
+      - test
+    Description: Set environment state
+    AllowedPattern: ^[a-zA-Z0-9-_/.:]*$
+    ConstraintDescription: You must select a environment state
+
+Resources:
+  WAFLogBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${ResourceType}-${RunEnvironment}-waf-log
+      AccessControl: Private
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: LifeCycleRule
+            Status: Enabled
+            ExpirationInDays: '365'
+
+  KinesisDataFirehoseRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "firehose.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref AWS::AccountId
+      Path: "/"
+      Policies:
+        -
+          PolicyName: "Permissions-Policy-For-Firehose"
+          PolicyDocument:
+            Statement:
+              -
+                Effect: "Allow"
+                Action:
+                  - "s3:AbortMultipartUpload"
+                  - "s3:GetBucketLocation"
+                  - "s3:GetObject"
+                  - "s3:ListBucket"
+                  - "s3:ListBucketMultipartUploads"
+                  - "s3:PutObject"
+                  - "logs:PutLogEvents"
+                Resource:
+                  - !Join
+                    - ''
+                    - - 'arn:aws:s3:::'
+                      - !Ref WAFLogBucket
+                  - !Join
+                    - ''
+                    - - 'arn:aws:s3:::'
+                      - !Ref WAFLogBucket
+                      - '/*'
+                  - !Join
+                    - ''
+                    - - 'arn:aws:logs:'
+                      - !Ref AWS::Region
+                      - ':'
+                      - !Ref AWS::AccountId
+                      - ':log-group:'
+                      - !Ref CloudWatchLogsLogGroup
+                      - ':log-stream:*'
+      RoleName: !Sub ${ResourceType}-${RunEnvironment}-delivery-stream-role
+
+  WAFLogDeliveryStream:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      DeliveryStreamName: !Sub aws-waf-logs-${ResourceType}-${RunEnvironment}-delivery-stream
+      DeliveryStreamType: DirectPut
+      ExtendedS3DestinationConfiguration:
+        BucketARN: !GetAtt WAFLogBucket.Arn
+        CloudWatchLoggingOptions:
+          Enabled: true
+          LogGroupName: !Ref CloudWatchLogsLogGroup
+          LogStreamName: !Ref CloudWatchLogsLogStream
+        Prefix: 'year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}/hour=!{timestamp:HH}/'
+        ErrorOutputPrefix: 'year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}/hour=!{timestamp:HH}/!{firehose:error-output-type}'
+        RoleARN: !GetAtt KinesisDataFirehoseRole.Arn
+
+  CloudWatchLogsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Join [ "", [ "/aws/kinesisfirehose/" , !Sub '${ResourceType}-${RunEnvironment}-delivery-stream'] ]
+      RetentionInDays: 90
+
+  CloudWatchLogsLogStream:
+    Type: AWS::Logs::LogStream
+    Properties:
+      LogGroupName: !Ref CloudWatchLogsLogGroup
+      LogStreamName: S3Delivery

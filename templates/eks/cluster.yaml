@@ -1,0 +1,248 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "EKS cluster (dedicated VPC: true, dedicated IAM: true) [created and managed by eksctl]"
+
+Parameters:
+  RunEnvironment:
+    Type: String
+    AllowedValues:
+      - dev
+      - stg
+      - prod
+      - test
+    Description: Set environment state
+    ConstraintDescription: You must select a environment state
+
+  BaseStackName:
+    Type: String
+    Description: The name of base stack
+    ConstraintDescription: You must set the name of base stack
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: ENV
+        Parameters:
+          - RunEnvironment
+      - Label:
+          default: Stacks
+        Parameters:
+          - BaseStackName
+    ParameterLabels:
+      RunEnvironment:
+        default: Environment
+      BaseStackName:
+        default: Stacks
+
+Mappings:
+  ServicePrincipalPartitionMap:
+    aws:
+      EC2: ec2.amazonaws.com
+      EKS: eks.amazonaws.com
+      EKSFargatePods: eks-fargate-pods.amazonaws.com
+    aws-cn:
+      EC2: ec2.amazonaws.com.cn
+      EKS: eks.amazonaws.com
+      EKSFargatePods: eks-fargate-pods.amazonaws.com
+    aws-us-gov:
+      EC2: ec2.amazonaws.com
+      EKS: eks.amazonaws.com
+      EKSFargatePods: eks-fargate-pods.amazonaws.com
+
+Resources:
+  ClusterSharedNodeSecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupDescription: Communication between all nodes in the cluster
+      Tags:
+        - Key: Name
+          Value:
+            !Sub "${AWS::StackName}/ClusterSharedNodeSecurityGroup"
+      VpcId:
+        Fn::ImportValue: !Sub "${BaseStackName}-VpcId"
+
+  ControlPlane:
+    Type: "AWS::EKS::Cluster"
+    Properties:
+      Name: !Sub "cluster-${RunEnvironment}"
+      ResourcesVpcConfig:
+        SecurityGroupIds:
+          - Ref: ControlPlaneSecurityGroup
+        SubnetIds:
+          - Fn::ImportValue: !Sub "${BaseStackName}-PublicSubnet01Id"
+          - Fn::ImportValue: !Sub "${BaseStackName}-PublicSubnet02Id"
+          - Fn::ImportValue: !Sub "${BaseStackName}-PrivateSubnet01Id"
+          - Fn::ImportValue: !Sub "${BaseStackName}-PrivateSubnet02Id"
+      RoleArn:
+        "Fn::GetAtt":
+          - ServiceRole
+          - Arn
+
+  ControlPlaneSecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupDescription: Communication between the control plane and worker nodegroups
+      Tags:
+        - Key: Name
+          Value:
+            !Sub "${AWS::StackName}/ControlPlaneSecurityGroup"
+      VpcId:
+        Fn::ImportValue: !Sub "${BaseStackName}-VpcId"
+
+  IngressDefaultClusterToNodeSG:
+    Type: "AWS::EC2::SecurityGroupIngress"
+    Properties:
+      Description: Allow managed and unmanaged nodes to communicate with each other (all ports)
+      FromPort: 0
+      GroupId:
+        Ref: ClusterSharedNodeSecurityGroup
+      IpProtocol: "-1"
+      SourceSecurityGroupId:
+        "Fn::GetAtt":
+          - ControlPlane
+          - ClusterSecurityGroupId
+      ToPort: 65535
+
+  IngressInterNodeGroupSG:
+    Type: "AWS::EC2::SecurityGroupIngress"
+    Properties:
+      Description: Allow nodes to communicate with each other (all ports)
+      FromPort: 0
+      GroupId:
+        Ref: ClusterSharedNodeSecurityGroup
+      IpProtocol: "-1"
+      SourceSecurityGroupId:
+        Ref: ClusterSharedNodeSecurityGroup
+      ToPort: 65535
+
+  IngressNodeToDefaultClusterSG:
+    Type: "AWS::EC2::SecurityGroupIngress"
+    Properties:
+      Description: Allow unmanaged nodes to communicate with control plane (all ports)
+      FromPort: 0
+      GroupId:
+        "Fn::GetAtt":
+          - ControlPlane
+          - ClusterSecurityGroupId
+      IpProtocol: "-1"
+      SourceSecurityGroupId:
+        Ref: ClusterSharedNodeSecurityGroup
+      ToPort: 65535
+
+  PolicyCloudWatchMetrics:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action:
+              - "cloudwatch:PutMetricData"
+            Effect: Allow
+            Resource: "*"
+        Version: "2012-10-17"
+      PolicyName:
+        !Sub "${AWS::StackName}-PolicyCloudWatchMetrics"
+      Roles:
+        - Ref: ServiceRole
+
+  PolicyELBPermissions:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action:
+              - "ec2:DescribeAccountAttributes"
+              - "ec2:DescribeAddresses"
+              - "ec2:DescribeInternetGateways"
+            Effect: Allow
+            Resource: "*"
+        Version: "2012-10-17"
+      PolicyName:
+        !Sub "${AWS::StackName}-PolicyELBPermissions"
+      Roles:
+        - Ref: ServiceRole
+
+  ServiceRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action:
+              - "sts:AssumeRole"
+            Effect: Allow
+            Principal:
+              Service:
+                - "Fn::FindInMap":
+                    - ServicePrincipalPartitionMap
+                    - Ref: "AWS::Partition"
+                    - EKS
+        Version: "2012-10-17"
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonEKSClusterPolicy"
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonEKSVPCResourceController"
+      Tags:
+        - Key: Name
+          Value:
+            !Sub "${AWS::StackName}/ServiceRole"
+
+Outputs:
+  ARN:
+    Value:
+      "Fn::GetAtt":
+        - ControlPlane
+        - Arn
+    Export:
+      Name:
+        !Sub "${AWS::StackName}::ARN"
+
+  CertificateAuthorityData:
+    Value:
+      "Fn::GetAtt":
+        - ControlPlane
+        - CertificateAuthorityData
+
+  ClusterSecurityGroupId:
+    Value:
+      "Fn::GetAtt":
+        - ControlPlane
+        - ClusterSecurityGroupId
+    Export:
+      Name:
+        !Sub "${AWS::StackName}::ClusterSecurityGroupId"
+
+  ClusterStackName:
+    Value:
+      Ref: "AWS::StackName"
+
+  ClusterName:
+    Value:
+      !Sub "cluster-${RunEnvironment}"
+
+  OpenIdConnectIssuerUrl:
+    Value:
+      !Select [1, !Split ["//", !GetAtt ControlPlane.OpenIdConnectIssuerUrl]]
+    Export:
+      Name:
+        !Sub "${AWS::StackName}::OpenIdConnectIssuerUrl"
+
+  SecurityGroup:
+    Value:
+      Ref: ControlPlaneSecurityGroup
+    Export:
+      Name:
+        !Sub "${AWS::StackName}::SecurityGroup"
+
+  ServiceRoleARN:
+    Value:
+      "Fn::GetAtt":
+        - ServiceRole
+        - Arn
+    Export:
+      Name:
+        !Sub "${AWS::StackName}::ServiceRoleARN"
+
+  SharedNodeSecurityGroup:
+    Value:
+      Ref: ClusterSharedNodeSecurityGroup
+    Export:
+      Name:
+        !Sub "${AWS::StackName}::SharedNodeSecurityGroup"

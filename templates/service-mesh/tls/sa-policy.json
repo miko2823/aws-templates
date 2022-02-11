@@ -1,0 +1,54 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": "appmesh:StreamAggregatedResources",
+            "Resource": [
+                "YourVirtualNode"
+            ]
+        },
+        {
+            "Effect": "Allow",
+            "Action": [
+                "xray:*"
+            ],
+            "Resource": [
+                "*"
+            ]
+        },
+        {
+            "Effect": "Allow",
+            "Action": [
+                "secretsmanager:GetRandomPassword",
+                "secretsmanager:GetResourcePolicy",
+                "secretsmanager:GetSecretValue",
+                "secretsmanager:DescribeSecret",
+                "secretsmanager:ListSecretVersionIds",
+                "secretsmanager:ListSecrets"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Effect": "Allow",
+            "Action": [
+                "ses:*"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Effect": "Allow",
+            "Action": "acm:ExportCertificate",
+            "Resource": [
+                "${acm_arn}"
+            ]
+        },
+        {
+            "Effect": "Allow",
+            "Action": "acm-pca:GetCertificateAuthorityCertificate",
+            "Resource": [
+                "YourACM"
+            ]
+        }
+    ]
+}

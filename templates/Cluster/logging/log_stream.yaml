@@ -1,0 +1,114 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: loggingStream
+
+Parameters:
+  RunEnvironment:
+    Type: String
+    AllowedValues:
+      - dev
+      - stg
+      - prod
+      - test
+    Description: Set environment state
+    AllowedPattern: ^[a-zA-Z0-9-_/.:]*$
+    ConstraintDescription: You must select a environment state
+
+  CloudWatchLogsLogGroup:
+    Type: String
+    Description: Set LogGroup Name
+    AllowedPattern: ^[a-zA-Z0-9-_/.:]*$
+    ConstraintDescription: You must set LogsLogGroup Name
+
+Resources:
+  LogBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${RunEnvironment}-eks-log
+      AccessControl: Private
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: LifeCycleRule
+            Status: Enabled
+            Transitions:
+              - StorageClass: GLACIER
+                TransitionInDays: 90
+
+  KinesisDataFirehoseRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "firehose.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref AWS::AccountId
+      Path: "/"
+      Policies:
+        -
+          PolicyName: "Permissions-Policy-For-Firehose"
+          PolicyDocument:
+            Statement:
+              -
+                Effect: "Allow"
+                Action:
+                  - "s3:AbortMultipartUpload"
+                  - "s3:GetBucketLocation"
+                  - "s3:GetObject"
+                  - "s3:ListBucket"
+                  - "s3:ListBucketMultipartUploads"
+                  - "s3:PutObject"
+                  - "logs:PutLogEvents"
+                Resource:
+                  - !Join
+                    - ''
+                    - - 'arn:aws:s3:::'
+                      - !Ref LogBucket
+                  - !Join
+                    - ''
+                    - - 'arn:aws:s3:::'
+                      - !Ref LogBucket
+                      - '/*'
+                  - !Join
+                    - ''
+                    - - 'arn:aws:logs:'
+                      - !Ref AWS::Region
+                      - ':'
+                      - !Ref AWS::AccountId
+                      - ':log-group:'
+                      - !Ref CloudWatchLogsLogGroup
+                      - ':log-stream:*'
+      RoleName: !Sub eks-log-${RunEnvironment}-delivery-stream-role
+
+  LogDeliveryStream:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      DeliveryStreamName: !Sub aws-eks-log-${RunEnvironment}-delivery-stream
+      DeliveryStreamType: DirectPut
+      ExtendedS3DestinationConfiguration:
+        BucketARN: !GetAtt LogBucket.Arn
+        CloudWatchLoggingOptions:
+          Enabled: true
+          LogGroupName: !Ref CloudWatchLogsLogGroup
+          LogStreamName: !Ref CloudWatchLogsLogStream
+        Prefix: 'year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}/hour=!{timestamp:HH}/'
+        ErrorOutputPrefix: 'year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}/hour=!{timestamp:HH}/!{firehose:error-output-type}'
+        RoleARN: !GetAtt KinesisDataFirehoseRole.Arn
+
+  CloudWatchLogsLogStream:
+    Type: AWS::Logs::LogStream
+    Properties:
+      LogGroupName: !Ref CloudWatchLogsLogGroup
+      LogStreamName: S3Delivery

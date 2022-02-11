@@ -1,0 +1,10 @@
+apiVersion: appmesh.k8s.aws/v1beta2
+kind: Mesh
+metadata:
+  name: {MeshName}
+spec:
+  namespaceSelector:
+    matchLabels:
+      mesh: {MeshName}
+  egressFilter:
+    type: ALLOW_ALL

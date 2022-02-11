@@ -1,0 +1,41 @@
+---
+
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: Regianal Waf Alarm
+
+Parameters:
+  ServerWaf:
+    Type: String
+    Description: Server Waf Name
+
+
+Resources:
+  SNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: Waf-Alert
+
+  WafAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Server Waf Blocked Alert
+      AlarmName: server-waf-blocked
+      AlarmActions:
+      - !Ref SNSTopic
+      OKActions:
+      - !Ref SNSTopic
+      ComparisonOperator: GreaterThanThreshold
+      EvaluationPeriods: 1
+      Threshold: 0
+      Metrics:
+      - Id: m1
+        MetricStat:
+          Metric:
+            MetricName: BlockedRequests
+            Namespace: AWS/WAFV2
+            Dimensions:
+            - Name: WebACL
+              Value: !Ref ServerWaf
+          Period: !!int 86400
+          Stat: Average

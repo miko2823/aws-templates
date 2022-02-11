@@ -1,0 +1,592 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "EKS Managed Nodes (SSH access: true) [created by eksctl]"
+
+Parameters:
+  RunEnvironment:
+    Type: String
+    AllowedValues:
+      - dev
+      - stg
+      - prod
+      - test
+    Description: Set environment state
+    ConstraintDescription: You must select a environment state
+
+  BaseStackName:
+    Type: String
+    Description: The Stack name of base stack
+    AllowedPattern: ^[a-zA-Z0-9-_/.:]*$
+    ConstraintDescription: You must set the name of base stack
+
+  ClusterStackName:
+    Type: String
+    Description: The Stack name of cluster stack
+    AllowedPattern: ^[a-zA-Z0-9-_/.:]*$
+    ConstraintDescription: You must set the name of cluster stack
+
+  InstanceType:
+    Type: String
+    Description: The Instance Type
+
+  Revision:
+    Type: String
+    Description: The Revision of NodeGroup
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: ENV
+        Parameters:
+          - RunEnvironment
+      - Label:
+          default: Stack
+        Parameters:
+          - BaseStackName
+          - ClusterStackName
+      - Label:
+          default: InstanceType
+        parameters:
+          - InstanceType
+      - Label:
+          default: Revision
+        parameters:
+          - Revision
+    ParameterLabels:
+      RunEnvironment:
+        default: Environment
+      BaseStackName:
+        default: BaseStackName
+      ClusterStackName:
+        default: ClusterStackName
+      InstanceType:
+        default: InstanceType
+      Revision:
+        default: Revision
+
+Mappings:
+  ServicePrincipalPartitionMap:
+    aws:
+      EC2: ec2.amazonaws.com
+      EKS: eks.amazonaws.com
+      EKSFargatePods: eks-fargate-pods.amazonaws.com
+    aws-cn:
+      EC2: ec2.amazonaws.com.cn
+      EKS: eks.amazonaws.com
+      EKSFargatePods: eks-fargate-pods.amazonaws.com
+    aws-us-gov:
+      EC2: ec2.amazonaws.com
+      EKS: eks.amazonaws.com
+      EKSFargatePods: eks-fargate-pods.amazonaws.com
+
+Resources:
+  LaunchTemplate:
+    Type: "AWS::EC2::LaunchTemplate"
+    Properties:
+      LaunchTemplateData:
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              Iops: 3000
+              Throughput: 125
+              VolumeSize: 80
+              VolumeType: gp3
+        KeyName: node-key
+        MetadataOptions:
+          HttpPutResponseHopLimit: 2
+          HttpTokens: optional
+        SecurityGroupIds:
+          - "Fn::ImportValue": !Sub "${ClusterStackName}::ClusterSecurityGroupId"
+          - Ref: SSH
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: !Sub "${RunEnvironment}-Node"
+              - Key: alpha.eksctl.io/nodegroup-name
+                Value: !Sub "${RunEnvironment}-1"
+              - Key: alpha.eksctl.io/nodegroup-type
+                Value: managed
+          - ResourceType: volume
+            Tags:
+              - Key: Name
+                Value: !Sub "${RunEnvironment}-Node"
+              - Key: alpha.eksctl.io/nodegroup-name
+                Value: !Sub "${RunEnvironment}-${Revision}"
+              - Key: alpha.eksctl.io/nodegroup-type
+                Value: managed
+      LaunchTemplateName:
+        !Sub "${AWS::StackName}"
+
+  ManagedNodeGroup:
+    Type: "AWS::EKS::Nodegroup"
+    Properties:
+      AmiType: AL2_x86_64
+      ClusterName: !Sub "cluster-${RunEnvironment}"
+      InstanceTypes:
+        - !Ref InstanceType
+      Labels:
+        alpha.eksctl.io/cluster-name:
+          !Sub "cluster-${RunEnvironment}"
+        alpha.eksctl.io/nodegroup-name:
+          !Sub "ng-${RunEnvironment}-${Revision}"
+      LaunchTemplate:
+        Id:
+          Ref: LaunchTemplate
+      NodeRole:
+        "Fn::GetAtt":
+          - NodeInstanceRole
+          - Arn
+      NodegroupName: !Sub "ng-${RunEnvironment}-${Revision}"
+      ScalingConfig:
+        DesiredSize: 2
+        MaxSize: 5
+        MinSize: 2
+      Subnets:
+        - Fn::ImportValue: !Sub "${BaseStackName}-PrivateSubnet01Id"
+        - Fn::ImportValue: !Sub "${BaseStackName}-PrivateSubnet02Id"
+      Tags:
+        alpha.eksctl.io/nodegroup-name: !Sub "ng-${RunEnvironment}-${Revision}"
+        alpha.eksctl.io/nodegroup-type: managed
+
+  NodeInstanceRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action:
+              - "sts:AssumeRole"
+            Effect: Allow
+            Principal:
+              Service:
+                - "Fn::FindInMap":
+                    - ServicePrincipalPartitionMap
+                    - Ref: "AWS::Partition"
+                    - EC2
+        Version: "2012-10-17"
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonEKSWorkerNodePolicy"
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonEKS_CNI_Policy"
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/CloudWatchAgentServerPolicy"
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore"
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser"
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/CloudWatchLogsFullAccess"
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonEKSVPCResourceController"
+      Path: /
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}/NodeInstanceRole"
+
+  PolicyAppMesh:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action:
+              - "servicediscovery:CreateService"
+              - "servicediscovery:DeleteService"
+              - "servicediscovery:GetService"
+              - "servicediscovery:GetInstance"
+              - "servicediscovery:RegisterInstance"
+              - "servicediscovery:DeregisterInstance"
+              - "servicediscovery:ListInstances"
+              - "servicediscovery:ListNamespaces"
+              - "servicediscovery:ListServices"
+              - "servicediscovery:GetInstancesHealthStatus"
+              - "servicediscovery:UpdateInstanceCustomHealthStatus"
+              - "servicediscovery:GetOperation"
+              - "route53:GetHealthCheck"
+              - "route53:CreateHealthCheck"
+              - "route53:UpdateHealthCheck"
+              - "route53:ChangeResourceRecordSets"
+              - "route53:DeleteHealthCheck"
+              - "appmesh:*"
+            Effect: Allow
+            Resource: "*"
+        Version: "2012-10-17"
+      PolicyName: !Sub "${AWS::StackName}-PolicyAppMesh"
+      Roles:
+        - Ref: NodeInstanceRole
+
+  PolicyAutoScaling:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action:
+              - "autoscaling:DescribeAutoScalingGroups"
+              - "autoscaling:DescribeAutoScalingInstances"
+              - "autoscaling:DescribeLaunchConfigurations"
+              - "autoscaling:DescribeTags"
+              - "autoscaling:SetDesiredCapacity"
+              - "autoscaling:TerminateInstanceInAutoScalingGroup"
+              - "ec2:DescribeLaunchTemplateVersions"
+            Effect: Allow
+            Resource: "*"
+        Version: "2012-10-17"
+      PolicyName: !Sub "${AWS::StackName}-PolicyAutoScaling"
+      Roles:
+        - Ref: NodeInstanceRole
+
+  PolicyAWSLoadBalancerController:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Condition:
+              StringEquals:
+                "ec2:CreateAction": CreateSecurityGroup
+              "Null":
+                "aws:RequestTag/elbv2.k8s.aws/cluster": "false"
+            Action:
+              - "ec2:CreateTags"
+            Resource: "arn:aws:ec2:*:*:security-group/*"
+            Effect: Allow
+          - Condition:
+              "Null":
+                "aws:RequestTag/elbv2.k8s.aws/cluster": "true"
+                "aws:ResourceTag/elbv2.k8s.aws/cluster": "false"
+            Action:
+              - "ec2:CreateTags"
+              - "ec2:DeleteTags"
+            Resource: "arn:aws:ec2:*:*:security-group/*"
+            Effect: Allow
+          - Condition:
+              "Null":
+                "aws:RequestTag/elbv2.k8s.aws/cluster": "false"
+            Action:
+              - "elasticloadbalancing:CreateLoadBalancer"
+              - "elasticloadbalancing:CreateTargetGroup"
+            Resource: "*"
+            Effect: Allow
+          - Condition:
+              "Null":
+                "aws:RequestTag/elbv2.k8s.aws/cluster": "true"
+                "aws:ResourceTag/elbv2.k8s.aws/cluster": "false"
+            Action:
+              - "elasticloadbalancing:AddTags"
+              - "elasticloadbalancing:RemoveTags"
+            Resource:
+              - "arn:aws:elasticloadbalancing:*:*:targetgroup/*/*"
+              - "arn:aws:elasticloadbalancing:*:*:loadbalancer/net/*/*"
+              - "arn:aws:elasticloadbalancing:*:*:loadbalancer/app/*/*"
+            Effect: Allow
+          - Condition:
+              "Null":
+                "aws:ResourceTag/elbv2.k8s.aws/cluster": "false"
+            Action:
+              - "ec2:AuthorizeSecurityGroupIngress"
+              - "ec2:RevokeSecurityGroupIngress"
+              - "ec2:DeleteSecurityGroup"
+              - "elasticloadbalancing:ModifyLoadBalancerAttributes"
+              - "elasticloadbalancing:SetIpAddressType"
+              - "elasticloadbalancing:SetSecurityGroups"
+              - "elasticloadbalancing:SetSubnets"
+              - "elasticloadbalancing:DeleteLoadBalancer"
+              - "elasticloadbalancing:ModifyTargetGroup"
+              - "elasticloadbalancing:ModifyTargetGroupAttributes"
+              - "elasticloadbalancing:DeleteTargetGroup"
+            Resource: "*"
+            Effect: Allow
+          - Action:
+              - "elasticloadbalancing:RegisterTargets"
+              - "elasticloadbalancing:DeregisterTargets"
+            Resource: "arn:aws:elasticloadbalancing:*:*:targetgroup/*/*"
+            Effect: Allow
+          - Action:
+              - "iam:CreateServiceLinkedRole"
+              - "ec2:DescribeAccountAttributes"
+              - "ec2:DescribeAddresses"
+              - "ec2:DescribeInternetGateways"
+              - "ec2:DescribeVpcs"
+              - "ec2:DescribeSubnets"
+              - "ec2:DescribeSecurityGroups"
+              - "ec2:DescribeInstances"
+              - "ec2:DescribeNetworkInterfaces"
+              - "ec2:DescribeTags"
+              - "elasticloadbalancing:DescribeLoadBalancers"
+              - "elasticloadbalancing:DescribeLoadBalancerAttributes"
+              - "elasticloadbalancing:DescribeListeners"
+              - "elasticloadbalancing:DescribeListenerCertificates"
+              - "elasticloadbalancing:DescribeSSLPolicies"
+              - "elasticloadbalancing:DescribeRules"
+              - "elasticloadbalancing:DescribeTargetGroups"
+              - "elasticloadbalancing:DescribeTargetGroupAttributes"
+              - "elasticloadbalancing:DescribeTargetHealth"
+              - "elasticloadbalancing:DescribeTags"
+              - "cognito-idp:DescribeUserPoolClient"
+              - "acm:ListCertificates"
+              - "acm:DescribeCertificate"
+              - "iam:ListServerCertificates"
+              - "iam:GetServerCertificate"
+              - "waf-regional:GetWebACL"
+              - "waf-regional:GetWebACLForResource"
+              - "waf-regional:AssociateWebACL"
+              - "waf-regional:DisassociateWebACL"
+              - "wafv2:GetWebACL"
+              - "wafv2:GetWebACLForResource"
+              - "wafv2:AssociateWebACL"
+              - "wafv2:DisassociateWebACL"
+              - "shield:GetSubscriptionState"
+              - "shield:DescribeProtection"
+              - "shield:CreateProtection"
+              - "shield:DeleteProtection"
+              - "ec2:AuthorizeSecurityGroupIngress"
+              - "ec2:RevokeSecurityGroupIngress"
+              - "ec2:CreateSecurityGroup"
+              - "elasticloadbalancing:CreateListener"
+              - "elasticloadbalancing:DeleteListener"
+              - "elasticloadbalancing:CreateRule"
+              - "elasticloadbalancing:DeleteRule"
+              - "elasticloadbalancing:SetWebAcl"
+              - "elasticloadbalancing:ModifyListener"
+              - "elasticloadbalancing:AddListenerCertificates"
+              - "elasticloadbalancing:RemoveListenerCertificates"
+              - "elasticloadbalancing:ModifyRule"
+            Resource: "*"
+            Effect: Allow
+        Version: "2012-10-17"
+      PolicyName: !Sub "${AWS::StackName}-PolicyAWSLoadBalancerController"
+      Roles:
+        - Ref: NodeInstanceRole
+
+  PolicyCertManagerChangeSet:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action:
+              - route53:ChangeResourceRecordSets
+            Effect: Allow
+            Resource: "arn:aws:route53:::hostedzone/*"
+        Version: "2012-10-17"
+      PolicyName: !Sub "${AWS::StackName}-PolicyCertManagerChangeSet"
+      Roles:
+        - Ref: NodeInstanceRole
+
+  PolicyCertManagerGetChange:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action:
+              - route53:GetChange
+            Effect: Allow
+            Resource: "arn:aws:route53:::change/*"
+        Version: "2012-10-17"
+      PolicyName: !Sub "${AWS::StackName}-PolicyCertManagerGetChange"
+      Roles:
+        - Ref: NodeInstanceRole
+
+  PolicyCertManagerHostedZones:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action:
+              - "route53:ListResourceRecordSets"
+              - "route53:ListHostedZonesByName"
+            Effect: Allow
+            Resource: "*"
+        Version: "2012-10-17"
+      PolicyName: !Sub "${AWS::StackName}-PolicyCertManagerHostedZones"
+      Roles:
+        - Ref: NodeInstanceRole
+
+  PolicyEBS:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action:
+              - "ec2:AttachVolume"
+              - "ec2:CreateSnapshot"
+              - "ec2:CreateTags"
+              - "ec2:CreateVolume"
+              - "ec2:DeleteSnapshot"
+              - "ec2:DeleteTags"
+              - "ec2:DeleteVolume"
+              - "ec2:DescribeAvailabilityZones"
+              - "ec2:DescribeInstances"
+              - "ec2:DescribeSnapshots"
+              - "ec2:DescribeTags"
+              - "ec2:DescribeVolumes"
+              - "ec2:DescribeVolumesModifications"
+              - "ec2:DetachVolume"
+              - "ec2:ModifyVolume"
+            Effect: Allow
+            Resource: "*"
+        Version: "2012-10-17"
+      PolicyName: !Sub "${AWS::StackName}-PolicyEBS"
+      Roles:
+        - Ref: NodeInstanceRole
+
+  PolicyEFS:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action:
+              - "elasticfilesystem:*"
+            Effect: Allow
+            Resource: "*"
+        Version: "2012-10-17"
+      PolicyName: !Sub "${AWS::StackName}-PolicyEFS"
+      Roles:
+        - Ref: NodeInstanceRole
+
+  PolicyEFSEC2:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action:
+              - "ec2:DescribeSubnets"
+              - "ec2:CreateNetworkInterface"
+              - "ec2:DescribeNetworkInterfaces"
+              - "ec2:DeleteNetworkInterface"
+              - "ec2:ModifyNetworkInterfaceAttribute"
+              - "ec2:DescribeNetworkInterfaceAttribute"
+            Effect: Allow
+            Resource: "*"
+        Version: "2012-10-17"
+      PolicyName: !Sub "${AWS::StackName}-PolicyEFSEC2"
+      Roles:
+        - Ref: NodeInstanceRole
+
+  PolicyExternalDNSChangeSet:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action:
+              - "route53:ChangeResourceRecordSets"
+            Effect: Allow
+            Resource: "arn:aws:route53:::hostedzone/*"
+        Version: "2012-10-17"
+      PolicyName: !Sub "${AWS::StackName}-PolicyExternalDNSChangeSet"
+      Roles:
+        - Ref: NodeInstanceRole
+
+  PolicyExternalDNSHostedZones:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action:
+              - "route53:ListHostedZones"
+              - "route53:ListResourceRecordSets"
+              - "route53:ListTagsForResource"
+
+            Effect: Allow
+            Resource: "*"
+        Version: "2012-10-17"
+      PolicyName: !Sub "${AWS::StackName}-PolicyExternalDNSHostedZones"
+      Roles:
+        - Ref: NodeInstanceRole
+
+  PolicyFSX:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action:
+              - "fsx:*"
+            Effect: Allow
+            Resource: "*"
+        Version: "2012-10-17"
+      PolicyName: !Sub "${AWS::StackName}-PolicyFSX"
+      Roles:
+        - Ref: NodeInstanceRole
+
+  PolicyServiceLinkRole:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action:
+              - "iam:CreateServiceLinkedRole"
+              - "iam:AttachRolePolicy"
+              - "iam:PutRolePolicy"
+            Effect: Allow
+            Resource: "arn:aws:iam::*:role/aws-service-role/*"
+        Version: "2012-10-17"
+      PolicyName: !Sub "${AWS::StackName}-PolicyServiceLinkRole"
+      Roles:
+        - Ref: NodeInstanceRole
+
+  PolicyXRay:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action:
+              - "xray:PutTraceSegments"
+              - "xray:PutTelemetryRecords"
+              - "xray:GetSamplingRules"
+              - "xray:GetSamplingTargets"
+              - "xray:GetSamplingStatisticSummaries"
+            Effect: Allow
+            Resource: "*"
+        Version: "2012-10-17"
+      PolicyName: !Sub "${AWS::StackName}-PolicyXRay"
+      Roles:
+        - Ref: NodeInstanceRole
+
+  PolicyCert:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action:
+              - "acm-pca:GetCertificateAuthorityCertificate"
+            Effect: Allow
+            Resource: "*"
+        Version: "2012-10-17"
+      PolicyName: !Sub "${AWS::StackName}-PolicyCert"
+      Roles:
+        - Ref: NodeInstanceRole
+
+  PolicySecret:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action:
+              - "secretsmanager:GetResourcePolicy"
+              - "secretsmanager:GetSecretValue"
+              - "secretsmanager:DescribeSecret"
+              - "secretsmanager:ListSecretVersionIds"
+            Effect: Allow
+            Resource: "*"
+        Version: "2012-10-17"
+      PolicyName: !Sub "${AWS::StackName}-PolicySecret"
+      Roles:
+        - Ref: NodeInstanceRole
+
+  SSH:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupDescription: Allow SSH access
+      GroupName:
+        !Sub "${AWS::StackName}-remoteAccess"
+      Tags:
+        - Key: Name
+          Value:
+            !Sub "${AWS::StackName}/SSH"
+      VpcId:
+        "Fn::ImportValue":
+          !Sub "${BaseStackName}-VpcId"
+
+  PublicEc2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      SubnetId:
+        Fn::ImportValue: !Sub "${BaseStackName}-PublicSubnet01Id"
+      SecurityGroupIds:
+       - !GetAtt SSH.GroupId
+      ImageId: ami-0701e21c502689c31
+      InstanceType: t2.micro
+      KeyName: node-key
+    DependsOn: SSH

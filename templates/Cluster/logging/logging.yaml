@@ -1,0 +1,68 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: "EKS Logging Resources"
+
+Parameters:
+  ESMasterName:
+    Type: String
+    Description: Set ElasticSearch Name
+    ConstraintDescription: You must set elasticsearch name
+  ESMasterPassword:
+    Type: String
+    Description: Set ElasticSearch Password
+    ConstraintDescription: You must set elasticsearch password
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: ES
+        Parameters:
+          - ESMasterName
+          - ESMasterPassword
+
+Resources:
+  ES:
+    Type: AWS::Elasticsearch::Domain
+    Properties:
+      AccessPolicies: !Sub '{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"AWS\":\"*\"},\"Action\":\"es:ESHttp*\",\"Resource\":\"arn:aws:es:${AWS::Region}:${AWS::AccountId}:domain/eks-logs/*\"}]}'
+      AdvancedSecurityOptions:
+        Enabled: true
+        InternalUserDatabaseEnabled: true
+        MasterUserOptions:
+            MasterUserName: !Ref ESMasterName
+            MasterUserPassword: !Ref ESMasterPassword
+      CognitoOptions:
+        Enabled: false
+      DomainEndpointOptions:
+        EnforceHTTPS: true
+        TLSSecurityPolicy: Policy-Min-TLS-1-0-2019-07
+      DomainName: !Ref ESMasterName
+      EBSOptions:
+        EBSEnabled: true
+        VolumeType": gp2
+        VolumeSize": 100
+      ElasticsearchClusterConfig:
+        InstanceType": r5.large.elasticsearch
+        InstanceCount: 1
+        DedicatedMasterEnabled: false
+        ZoneAwarenessEnabled: false
+        WarmEnabled: false
+      ElasticsearchVersion: 7.10
+      EncryptionAtRestOptions:
+        Enabled: true
+      NodeToNodeEncryptionOptions:
+        Enabled: true
+
+
+  FluentBitAccessPolicy:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action:
+              - "*"
+            Effect: Allow
+            Resource: arn:aws:logs:ap-northeast-1:${AWS::AccountID}:log-group:eks-fluentbit:*
+        Version: "2012-10-17"
+      PolicyName: !Sub "${AWS::StackName}-FluentBitAccessPolicy"

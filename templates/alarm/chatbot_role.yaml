@@ -1,0 +1,50 @@
+---
+
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: Chatbot Config
+
+Parameters:
+  ChannelId:
+    Type: String
+    Description: ChannelId of Chatbot
+  WorkspaceId:
+    Type: String
+    Description: WorkspaceId of Chatbot
+
+Resources:
+  AWSChatbotRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: chatbot.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: AWS-Chatbot-NotificationsOnly-Policy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Resource: "*"
+                Effect: Allow
+                Action:
+                  - cloudwatch:Get*
+                  - cloudwatch:List*
+                  - cloudwatch:Describe*
+
+  ChatBotChannel:
+    Type: AWS::Chatbot::SlackChannelConfiguration
+    Properties:
+      ConfigurationName: Lisse-Slack-Notification
+      IamRoleArn: !GetAtt AWSChatbotRole.Arn
+      LoggingLevel: NONE
+      SlackChannelId: !Ref ChannelId
+      SlackWorkspaceId: !Ref WorkspaceId
+      SnsTopicArns:
+        - !Ref FrontWafAlarm
+        - !Ref FrontManageWafAlarm
+        - !Ref ServerWafAlarm

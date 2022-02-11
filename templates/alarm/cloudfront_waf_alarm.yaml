@@ -1,0 +1,69 @@
+---
+
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: CloudFront Waf Alarm(us-east-1 region)
+
+Parameters:
+  FrontWaf:
+    Type: String
+    Description: Front Waf Name
+  FrontManagementWaf:
+    Type: String
+    Description: Front Management Waf
+
+
+Resources:
+  SNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: Waf-Alert
+
+
+  FrontWafAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Front Waf Blocked Alert
+      AlarmName: front-waf-blocked
+      AlarmActions:
+      - !Ref SNSTopic
+      OKActions:
+      - !Ref SNSTopic
+      ComparisonOperator: GreaterThanThreshold
+      EvaluationPeriods: 1
+      Threshold: 0
+      Metrics:
+      - Id: m1
+        MetricStat:
+          Metric:
+            MetricName: BlockedRequests
+            Namespace: AWS/WAFV2
+            Dimensions:
+            - Name: WebACL
+              Value: !Ref FrontWaf
+          Period: !!int 86400
+          Stat: Average
+
+  FrontManagementWafAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Front Waf Blocked Alert
+      AlarmName: front-manage-waf-blocked
+      AlarmActions:
+      - !Ref SNSTopic
+      OKActions:
+      - !Ref SNSTopic
+      ComparisonOperator: GreaterThanThreshold
+      EvaluationPeriods: 1
+      Threshold: 0
+      Metrics:
+      - Id: m1
+        MetricStat:
+          Metric:
+            MetricName: BlockedRequests
+            Namespace: AWS/WAFV2
+            Dimensions:
+            - Name: WebACL
+              Value: !Ref FrontManagementWaf
+          Period: !!int 86400
+          Stat: Average

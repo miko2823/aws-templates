@@ -1,0 +1,228 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+Description: StaticWebPipeLine
+
+
+Parameters:
+
+  RunEnvironment:
+    Type: String
+    AllowedValues:
+      - dev
+      - stg
+      - prod
+
+  SourceConnectionArn:
+    Type: String
+  GitHubAccountName:
+    Type: String
+
+  GitHubRepo:
+    Type: String
+
+  GitHubBranch:
+    Type: String
+
+  StaticWebS3Bucket:
+    Type: String
+
+  CodeBuildDockerImage:
+    Type: String
+
+  CFDistributionID:
+    Type: String
+
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: ENV
+        Parameters:
+          - RunEnvironment
+      - Label:
+          default: Git
+        Parameters:
+          - GitHubAccountName
+          - GitHubRepo
+          - GitHubBranch
+          - SourceConnectionArn
+      - Label:
+          default: S3
+        Parameters:
+          - StaticWebS3Bucket
+
+Mappings:
+  BuildSpecYaml:
+    env:
+      prod: buildspec.yml
+      stg: buildspec.yml
+      dev: buildspec-dev.yml
+
+Resources:
+  CodePipelineArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${GitHubRepo}-artifact
+      LifecycleConfiguration:
+        Rules:
+          - Id: LifeCycleRule
+            Status: Enabled
+            ExpirationInDays: '30'
+
+  CodePipelineServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: codepipeline-access
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Resource: "*"
+                Effect: Allow
+                Action:
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
+                  - iam:PassRole
+                  - s3:*
+              - Resource: !Ref SourceConnectionArn
+                Effect: Allow
+                Action:
+                  - codestar-connections:UseConnection
+              - Resource: !Sub arn:aws:s3:::${CodePipelineArtifactBucket}/*
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:GetBucketVersioning
+    DependsOn: CodePipelineArtifactBucket
+
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Resource: '*'
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+              - Resource: !Sub arn:aws:s3:::${CodePipelineArtifactBucket}/*
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:GetObjectVersion
+              - Resource: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${CFDistributionID}
+                Effect: Allow
+                Action:
+                  - cloudfront:CreateInvalidation
+              - Resource: !Ref SourceConnectionArn
+                Effect: Allow
+                Action:
+                  - codestar-connections:UseConnection
+              - Resource: '*'
+                Effect: Allow
+                Action:
+                  - secretsmanager:GetRandomPassword
+                  - secretsmanager:GetResourcePolicy
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                  - secretsmanager:ListSecretVersionIds
+                  - secretsmanager:ListSecrets
+
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub ${AWS::StackName}-static-pipe
+      Artifacts:
+        Type: CODEPIPELINE
+      Source:
+        BuildSpec: !FindInMap [BuildSpecYaml, env, !Ref RunEnvironment]
+        Type: CODEPIPELINE
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Type: LINUX_CONTAINER
+        PrivilegedMode: true
+        Image: !Ref CodeBuildDockerImage
+        EnvironmentVariables:
+          - Name: CFDistributionID
+            Value: !Ref CFDistributionID
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+
+  CodePipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub ${GitHubRepo}-staticweb-pipe
+      RoleArn: !GetAtt CodePipelineServiceRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref CodePipelineArtifactBucket
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: App
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Version: 1
+                Provider: CodeStarSourceConnection
+              Configuration:
+                ConnectionArn: !Ref SourceConnectionArn
+                FullRepositoryId: !Sub ${GitHubAccountName}/${GitHubRepo}
+                BranchName: !Ref GitHubBranch
+                OutputArtifactFormat: CODEBUILD_CLONE_REF
+              OutputArtifacts:
+                - Name: App
+              RunOrder: 1
+        - Name: Build
+          Actions:
+            - Name: Build
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: 1
+                Provider: CodeBuild
+              Configuration:
+                ProjectName: !Ref CodeBuildProject
+              InputArtifacts:
+                - Name: App
+              OutputArtifacts:
+                - Name: artifact1
+              RunOrder: 1
+        - Name: Deploy1
+          Actions:
+            - Name: Deploy1
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Version: 1
+                Provider: S3
+              Configuration:
+                BucketName: !Ref StaticWebS3Bucket
+                Extract: true
+              InputArtifacts:
+                - Name: artifact1
+              RunOrder: 1
+    DependsOn: CodeBuildProject
