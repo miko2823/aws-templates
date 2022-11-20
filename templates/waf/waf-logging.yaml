@@ -8,7 +8,6 @@ Parameters:
     Type: String
     AllowedValues:
       - front
-      - front-management
       - serverside
     Description: Set resource type
     AllowedPattern: ^[a-zA-Z0-9-_/.:]*$

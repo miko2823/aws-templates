@@ -12,7 +12,8 @@ else
     exit 1;
 fi
 
-read -p 'Git Hub Token of  lisse-dev-manage: ' token
+read -p 'Git Hub Username: ' username
+read -p 'Git Hub Token: ' token
 read -p 'Target Branch(develop/staging/master): ' branch
 read -p 'Value.file Name: ' valuefile_name
 
@@ -31,7 +32,7 @@ echo 'Please change your password...'
 argocd login localhost:8080
 
 echo 'Settings chart repository...'
-argocd repocreds add {YourChartRepo} --username lisse-dev-manage --password $token
+argocd repocreds add {YourChartRepo} --username $username --password $token
 
 echo 'Adding application into ArgoCD...'
 template=`cat "application.yaml" | sed "s/{{TARGET_BRANCH}}/$branch/g"`

@@ -39,7 +39,7 @@ Resources:
   ChatBotChannel:
     Type: AWS::Chatbot::SlackChannelConfiguration
     Properties:
-      ConfigurationName: Lisse-Slack-Notification
+      ConfigurationName: Slack-Notification
       IamRoleArn: !GetAtt AWSChatbotRole.Arn
       LoggingLevel: NONE
       SlackChannelId: !Ref ChannelId
